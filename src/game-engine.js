@@ -382,4 +382,276 @@ export default class GameEngine {
     this.sounds.swoosh.play();
     if (this.cycleGameMode) {
       this.cycleGameMode();
-    } else if ...
+    } else if (this.setCoopMode) {
+      this.setCoopMode(!this.isCoopMode);
+    } else {
+      this.isCoopMode = !this.isCoopMode;
+      this.resetGameContext();
+      if (this.updateModeButton) this.updateModeButton();
+    }
+  }
+
+  updateDifficulty() {
+    let levels = Math.floor(this.score / 3);
+    this.currentVelocityX = CONFIG.initialVelocityX - (levels * 0.25);
+    this.currentGap = Math.max(CONFIG.baseGap - (levels * 4), CONFIG.minGap);
+  }
+
+  spawnPipes() {
+    if (!this.gameStarted || this.isDead || this.gameOver) return;
+
+    let playableHeight = CONFIG.boardHeight - CONFIG.baseHeight;
+    let minPipeY = -CONFIG.pipeHeight + 60;
+    let maxPipeY = playableHeight - CONFIG.pipeHeight - this.currentGap - 60;
+    if (maxPipeY < minPipeY) maxPipeY = minPipeY;
+    let randomPipeY = minPipeY + Math.random() * (maxPipeY - minPipeY);
+
+    const oscLevel = Math.floor(this.score / 5);
+    const oscAmplitude = Math.min(oscLevel * 6, 40);
+    const oscFreq = 1 + oscLevel * 0.18;
+    const offset = Math.random() * 10000;
+
+    const top = new Pipe(CONFIG.boardWidth, randomPipeY, true);
+    top.yBase = randomPipeY;
+    top.oscAmplitude = oscAmplitude;
+    top.oscFreq = oscFreq;
+    top.oscOffset = offset;
+
+    const bottomYBase = randomPipeY + CONFIG.pipeHeight + this.currentGap;
+    const bottom = new Pipe(CONFIG.boardWidth, bottomYBase, false);
+    bottom.yBase = bottomYBase;
+    bottom.oscAmplitude = oscAmplitude;
+    bottom.oscFreq = oscFreq;
+    bottom.oscOffset = offset + 500;
+
+    this.pipes.push(top, bottom);
+  }
+
+  checkCollisions() {
+    let sueloY = CONFIG.boardHeight - CONFIG.baseHeight;
+
+    this.players.forEach(bird => {
+      if (!bird.alive) return;
+
+      if (bird.y + bird.height >= sueloY) {
+        bird.y = sueloY - bird.height;
+        bird.alive = false;
+      }
+
+      this.pipes.forEach(pipe => {
+        if (bird.getBounds().collidesWith(pipe.getBounds())) {
+          bird.alive = false;
+        }
+      });
+
+      if (!bird.alive && !this.isDead) {
+        this.sounds.hit.play();
+        this.flashAlpha = 1;
+        this.players.forEach(p => p.velocityY = -3.5);
+        this.isDead = true;
+        if (!this.gameOver) {
+          this.sounds.die.play();
+          this.sounds.bgm.pause();
+          this.gameOver = true;
+        }
+      }
+    });
+
+    if (this.players.every(p => !p.alive)) {
+      let lowestBirdY = Math.max(...this.players.map(p => p.y));
+      if (lowestBirdY >= sueloY - CONFIG.birdHeight && !this.gameOver) {
+        this.sounds.die.play();
+        this.sounds.bgm.pause();
+        this.gameOver = true;
+      }
+    }
+  }
+
+  startLoop() {
+    const loop = () => {
+      this.update();
+      this.render();
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+
+  update() {
+    if (this.gameStarted && !this.isDead) {
+      this.pipes.forEach(pipe => {
+        pipe.x += this.currentVelocityX;
+        if (!pipe.passed && pipe.isTop && (this.players[0].x > pipe.x + CONFIG.pipeWidth)) {
+          this.sounds.point.play();
+          this.score += 1;
+          pipe.passed = true;
+          this.updateDifficulty();
+        }
+        if (pipe.oscAmplitude && pipe.yBase !== undefined) {
+          pipe.y = pipe.yBase + Math.sin((Date.now() + (pipe.oscOffset || 0)) / 1000 * (pipe.oscFreq || 1)) * pipe.oscAmplitude;
+        }
+      });
+    }
+
+    while (this.pipes.length > 0 && this.pipes[0].x < -CONFIG.pipeWidth) {
+      this.pipes.shift();
+    }
+
+    this.players.forEach(bird => bird.update(this.gameStarted, this.isDead));
+
+    if (!this.gameOver) {
+      this.checkCollisions();
+    }
+  }
+
+  render() {
+    this.context.clearRect(0, 0, CONFIG.boardWidth, CONFIG.boardHeight);
+
+    if (this.assets.bg.complete) {
+      this.context.drawImage(this.assets.bg, 0, 0, CONFIG.boardWidth, CONFIG.boardHeight);
+    }
+
+    this.pipes.forEach(pipe => pipe.draw(this.context, this.assets.pipe));
+
+    if (this.assets.base.complete) {
+      this.context.drawImage(this.assets.base, 0, CONFIG.boardHeight - CONFIG.baseHeight, CONFIG.boardWidth, CONFIG.baseHeight);
+    }
+
+    this.players.forEach(bird => bird.draw(this.context));
+
+    if (this.gameStarted) this.drawScore();
+    if (!this.gameStarted) this.context.drawImage(this.assets.message, CONFIG.boardWidth / 2 - 92, CONFIG.boardHeight / 2 - 150, 184, 267);
+    if (this.gameOver) this.context.drawImage(this.assets.gameOver, CONFIG.boardWidth / 2 - 96, CONFIG.boardHeight / 3, 192, 42);
+
+    if (this.flashAlpha > 0) {
+      this.context.fillStyle = `rgba(255, 255, 255, ${this.flashAlpha})`;
+      this.context.fillRect(0, 0, CONFIG.boardWidth, CONFIG.boardHeight);
+      this.flashAlpha -= 0.08;
+    }
+  }
+
+  drawScore() {
+    let scoreStr = Math.floor(this.score).toString();
+    let dW = 24, dH = 36;
+    let startX = (CONFIG.boardWidth / 2) - ((scoreStr.length * dW) / 2);
+
+    for (let i = 0; i < scoreStr.length; i++) {
+      let digitImg = this.assets.numbers[parseInt(scoreStr[i])];
+      if (digitImg?.complete) {
+        this.context.drawImage(digitImg, startX + (i * dW), 40, dW, dH);
+      }
+    }
+  }
+}
+
+class Hitbox {
+  constructor(x, y, w, h) {
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+  }
+
+  collidesWith(o) {
+    return this.x < o.x + o.w && this.x + this.w > o.x && this.y < o.y + o.h && this.y + this.h > o.y;
+  }
+}
+
+class Bird {
+  constructor(startX, startY, skinColor, jumpKeys) {
+    this.x = startX;
+    this.y = startY;
+    this.width = CONFIG.birdWidth;
+    this.height = CONFIG.birdHeight;
+    this.velocityY = 0;
+    this.alive = true;
+    this.jumpKeys = jumpKeys;
+    this.sprites = [];
+    ['downflap', 'midflap', 'upflap'].forEach(flap => {
+      const img = new Image();
+      img.src = `./assets/${skinColor}bird-${flap}.png`;
+      this.sprites.push(img);
+    });
+    this.animFrame = 0;
+    this.tick = 0;
+    this.angle = 0;
+  }
+
+  jump() {
+    this.velocityY = CONFIG.jumpForce;
+  }
+
+  update(gameStarted, isDead) {
+    if (!gameStarted) {
+      this.y = (CONFIG.boardHeight / 2 - 50) + Math.sin(Date.now() * 0.005) * 8;
+      this.tick++;
+      if (this.tick % 8 === 0) this.animFrame = (this.animFrame + 1) % 3;
+      return;
+    }
+
+    this.velocityY += CONFIG.gravity;
+    if (isDead) {
+      this.y += this.velocityY;
+    } else {
+      this.y = Math.max(this.y + this.velocityY, 0);
+    }
+
+    if (this.alive && !isDead) {
+      this.tick++;
+      if (this.tick % 5 === 0) this.animFrame = (this.animFrame + 1) % 3;
+    } else {
+      this.animFrame = 1;
+    }
+
+    if (this.velocityY < 0) {
+      this.angle = -0.35;
+    } else {
+      this.angle = Math.min((this.velocityY / 15) * 1.2, Math.PI / 2);
+    }
+
+    if (!this.alive) {
+      this.angle = Math.min(this.angle + 0.06, Math.PI / 2);
+    }
+  }
+
+  draw(ctx) {
+    const currentImg = this.sprites[this.animFrame];
+    if (!currentImg?.complete) return;
+    ctx.save();
+    ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
+    ctx.rotate(this.angle);
+    ctx.drawImage(currentImg, -this.width / 2, -this.height / 2, this.width, this.height);
+    ctx.restore();
+  }
+
+  getBounds() {
+    return new Hitbox(this.x, this.y, this.width, this.height);
+  }
+}
+
+class Pipe {
+  constructor(x, y, isTop) {
+    this.x = x;
+    this.y = y;
+    this.width = CONFIG.pipeWidth;
+    this.height = CONFIG.pipeHeight;
+    this.isTop = isTop;
+    this.passed = false;
+  }
+
+  draw(ctx, img) {
+    if (!img.complete) return;
+    if (this.isTop) {
+      ctx.save();
+      ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
+      ctx.scale(1, -1);
+      ctx.drawImage(img, -this.width / 2, -this.height / 2, this.width, this.height);
+      ctx.restore();
+    } else {
+      ctx.drawImage(img, this.x, this.y, this.width, this.height);
+    }
+  }
+
+  getBounds() {
+    return new Hitbox(this.x, this.y, this.width, this.height);
+  }
+}
